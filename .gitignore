@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Environments
+.env
+.venv
+env/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.synctex.gz
+
+# CADET HDF5 files (large, regenerable)
+artifacts/nl_nilt_benchmarks/*.h5

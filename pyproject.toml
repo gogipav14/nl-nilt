@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nl-nilt"
+version = "0.1.0"
+description = "Nonlinear FFT-NILT for chromatography via adaptive re-linearization"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "BSD-3-Clause"}
+dependencies = [
+    "numpy>=1.20",
+    "scipy>=1.7",
+]
+
+[project.optional-dependencies]
+figures = [
+    "matplotlib>=3.5",
+]
+cadet = [
+    "h5py>=3.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "matplotlib>=3.5",
+    "h5py>=3.0",
+]
+all = [
+    "matplotlib>=3.5",
+    "h5py>=3.0",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cadet_lab*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

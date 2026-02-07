@@ -1,0 +1,24 @@
+{
+  "name": "param_estimation",
+  "timestamp": "2026-02-07T12:55:32",
+  "results": [
+    {
+      "nilt_ka": 9.94321885137813,
+      "nilt_kd": 25.40751953654965,
+      "nilt_evals": 519,
+      "nilt_wall_ms": 18026.84019500157,
+      "cadet_ka": 0.9456050663155234,
+      "cadet_kd": 4.730767786139377,
+      "cadet_evals": 783,
+      "cadet_wall_ms": 42353.927170013776,
+      "speedup": 2.3494925739541173,
+      "true_ka": 1.5,
+      "true_kd": 7.5
+    }
+  ],
+  "summary": {
+    "speedup": 2.3494925739541173,
+    "nilt_converged": true,
+    "cadet_converged": true
+  }
+}

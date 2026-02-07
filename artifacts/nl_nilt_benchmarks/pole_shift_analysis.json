@@ -1,0 +1,11 @@
+{
+  "name": "pole_shift_analysis",
+  "timestamp": "2026-02-07T12:53:20",
+  "results": [],
+  "summary": {
+    "pole_linear": -5.0,
+    "pole_relin_at_cfeed_1": -6.0,
+    "pole_relin_at_cfeed_5": -10.0,
+    "pole_relin_at_cfeed_10": -15.0
+  }
+}

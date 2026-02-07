@@ -1,0 +1,43 @@
+{
+  "name": "large_column_benchmark",
+  "timestamp": "2026-02-07T12:53:38",
+  "results": [
+    {
+      "c_feed": 1.0,
+      "loading_ratio": 0.1,
+      "n_iterations": 2,
+      "converged": true,
+      "wall_time_us": 52068.04201588966,
+      "strategy": "relinearization+anderson",
+      "l2_error_vs_cadet": 0.011140904366945738,
+      "cadet_wall_ms": 62.584016006439924,
+      "speedup": 1.2019659964809335
+    },
+    {
+      "c_feed": 5.0,
+      "loading_ratio": 0.5,
+      "n_iterations": 2,
+      "converged": true,
+      "wall_time_us": 56047.12400236167,
+      "strategy": "relinearization+anderson",
+      "l2_error_vs_cadet": 0.07218965501595566,
+      "cadet_wall_ms": 87.47946401126683,
+      "speedup": 1.5608198559408808
+    }
+  ],
+  "summary": {
+    "transport": {
+      "velocity": 0.0005,
+      "dispersion": 5e-07,
+      "length": 0.25,
+      "col_porosity": 0.37,
+      "par_radius": 2.5e-05,
+      "par_porosity": 0.33,
+      "film_diffusion": 5e-06,
+      "pore_diffusion": 5e-11
+    },
+    "ka": 1.0,
+    "kd": 5.0,
+    "qmax": 10.0
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "analytical_comparison",
+  "timestamp": "2026-02-07T13:40:53",
+  "results": [
+    {
+      "rms_linear_vs_analytical": 0.04666535356562427,
+      "rms_iter1_vs_analytical": 0.006613895654279541,
+      "rms_iter2_vs_analytical": 0.006068595823283942,
+      "rms_iter3_vs_analytical": 0.005776204005891682,
+      "improvement_iter1": 7.055653128641259,
+      "improvement_iter2": 7.689645994643274,
+      "has_cadet": true
+    }
+  ],
+  "summary": {
+    "chen_hsu_params": {
+      "C0": 1e-06,
+      "k1": 10000.0,
+      "k2": 0.1,
+      "V": 0.1,
+      "L": 10.0,
+      "alpha": 1e-05
+    },
+    "cadet_si_params": {
+      "ka": 0.01,
+      "kd": 0.1,
+      "qmax": 10.0,
+      "c_feed": 1.0,
+      "velocity": 0.001,
+      "length": 0.1,
+      "eps_t": 0.5
+    },
+    "K_eq": 1.0,
+    "Ka_C0": 0.09999999999999999
+  }
+}

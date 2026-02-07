@@ -1,0 +1,41 @@
+{
+  "name": "sma_benchmark",
+  "timestamp": "2026-02-07T12:53:21",
+  "results": [
+    {
+      "c_feed": 0.01,
+      "n_iterations": 2,
+      "converged": true,
+      "wall_time_us": 25322.037981823087,
+      "strategy": "relinearization+anderson",
+      "final_residual": 2.2641639141533392e-07
+    },
+    {
+      "c_feed": 0.1,
+      "n_iterations": 3,
+      "converged": true,
+      "wall_time_us": 26484.620000701398,
+      "strategy": "relinearization+anderson",
+      "final_residual": 7.87856899557317e-07
+    },
+    {
+      "c_feed": 1.0,
+      "n_iterations": 3,
+      "converged": true,
+      "wall_time_us": 28290.627000387758,
+      "strategy": "relinearization+anderson",
+      "final_residual": 1.1831440351945621e-06
+    }
+  ],
+  "summary": {
+    "n_cases": 3,
+    "converged": 3,
+    "ka": 0.1,
+    "kd": 10.0,
+    "Lambda": 10.0,
+    "nu": 2.0,
+    "z_protein": 2.0,
+    "z_salt": 1.0,
+    "c_salt": 0.05
+  }
+}

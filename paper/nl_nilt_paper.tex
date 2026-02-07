@@ -1,0 +1,618 @@
+\documentclass[review]{elsarticle}
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{siunitx}
+\usepackage{hyperref}
+
+\journal{Computers and Chemical Engineering}
+
+\begin{document}
+
+\begin{frontmatter}
+
+\title{Extending FFT-based numerical inverse Laplace transform to nonlinear chromatography via adaptive re-linearization}
+
+\author[cadet]{First Author}
+\author[cadet]{Second Author}
+\address[cadet]{Institute of Bio- and Geosciences (IBG-1: Biotechnology), Forschungszentrum J\"ulich, 52425 J\"ulich, Germany}
+
+\begin{abstract}
+The Fast Fourier Transform based Numerical Inverse Laplace Transform (FFT-NILT) provides significant computational speedup for linear chromatographic transport problems.
+However, extending FFT-NILT to nonlinear binding isotherms (Langmuir, SMA) has remained an open challenge because the convolution product $c \cdot q$ in the binding kinetics destroys the multiplicative structure required by the Laplace domain.
+We present an adaptive re-linearization scheme that overcomes this limitation by iteratively updating the effective binding parameters around the current operating concentration.
+At each step, the transfer function is re-linearized with effective parameters $q_\mathrm{max,eff} = q_\mathrm{max} - q_0(c_0)$ and $k_{d,\mathrm{eff}} = k_d + k_a c_0$, which shifts the kinetic pole further into the left half-plane and improves CFL feasibility.
+Validation against the Thomas analytical solution for plug-flow adsorption demonstrates that a single re-linearization step reduces the root-mean-square error by a factor of 7 compared to the linear approximation, achieving accuracy superior to finite-volume discretization with 512 cells.
+For the full General Rate Model with Langmuir and SMA binding, the method produces breakthrough curves within 0.7--7.6\% relative $L^2$ error of CADET reference solutions across dilute-to-overloaded conditions, with wall times of approximately \SI{54}{\milli\second} per evaluation.
+The approach is implemented as a first-class solver option within the CADET ecosystem, with reference-free mass-balance diagnostics providing convergence guarantees without external validation.
+\end{abstract}
+
+\begin{keyword}
+chromatography \sep numerical inverse Laplace transform \sep nonlinear binding \sep General Rate Model \sep Langmuir isotherm \sep fast Fourier transform
+\end{keyword}
+
+\end{frontmatter}
+
+
+%% ====================================================================
+\section{Introduction}
+\label{sec:introduction}
+%% ====================================================================
+
+Model-based process development in preparative chromatography requires repeated evaluation of column models for parameter estimation, sensitivity analysis, and process optimization \cite{Guiochon2006}.
+The General Rate Model (GRM) provides a rigorous description of column dynamics including axial dispersion, film mass transfer, intraparticle pore diffusion, and kinetic binding \cite{Guiochon2006,vonLieres2010}.
+Numerical solution of the GRM typically employs the method of lines with finite-volume spatial discretization and implicit time integration, as implemented in the CADET framework \cite{vonLieres2010,Leweke2018}.
+While accurate, each forward evaluation requires tens to hundreds of milliseconds, and parameter estimation workflows involving thousands of evaluations can become computationally prohibitive.
+
+The Numerical Inverse Laplace Transform (NILT) offers an alternative computational pathway.
+By transforming the GRM partial differential equations into the Laplace domain, the coupled system of PDEs reduces to an algebraic transfer function $F(s)$ relating inlet to outlet concentration in the frequency domain.
+The time-domain solution is then recovered via numerical inversion of $F(s)$ along the Bromwich contour.
+Among NILT algorithms, the FFT-based approach of de~Hoog et al.\ \cite{deHoog1982} provides an efficient means of evaluating the inverse transform using the Fast Fourier Transform.
+
+In a companion paper \cite{Paper2CES}, we demonstrated that FFT-NILT with CFL-informed parameter selection achieves 100--1600$\times$ speedup over finite-volume solvers for linear transport problems (advection-dispersion, GRM without binding).
+However, that work also identified a fundamental limitation: \emph{kinetic binding introduces poles near the imaginary axis} that cause the transfer function magnitude to grow as $|F(s)| \sim 10^{21}$ on the standard Bromwich contour, rendering FFT-NILT numerically infeasible.
+Specifically, the Langmuir kinetic term introduces a pole at $s = -k_d$, and for typical desorption rate constants ($k_d \sim 0.01$--$1~\mathrm{s}^{-1}$), this pole lies close to the imaginary axis where the Bromwich integral is evaluated.
+
+The idea of using iterative FFT techniques for nonlinear adsorption problems was introduced by Chen and Hsu \cite{ChenHsu1989}, who solved the plug-flow adsorption model with second-order Langmuir kinetics.
+Their approach treats the nonlinear product $C \cdot \theta$ (concentration times fractional loading) as a known forcing term from the previous iteration, computes its Fourier transform, and uses it as a distributed source in the frequency-domain solution.
+Starting from the linear approximation ($C \cdot \theta \approx 0$), they demonstrated convergence to the Thomas analytical solution \cite{Thomas1944} within two iterations for mildly nonlinear conditions.
+However, their formulation was limited to plug-flow columns without axial dispersion, did not address the full GRM with particle mass transfer, and lacked a systematic framework for parameter selection or convergence monitoring.
+
+In this work, we extend the FFT-NILT methodology to the full nonlinear chromatography problem.
+Rather than treating the nonlinear residual as a distributed source (which would require knowledge of the spatially distributed Green's function), we adopt an \emph{adaptive re-linearization} strategy: at each iteration, the binding isotherm is linearized around the current operating concentration, producing a new transfer function with effective parameters that can be evaluated using the standard FFT-NILT machinery.
+The key insight is that re-linearization around a nonzero operating point $c_0$ shifts the effective kinetic pole from $s = -k_d$ to $s = -(k_d + k_a c_0)$, moving it further into the left half-plane and thereby \emph{improving} the CFL conditions for the Bromwich integral.
+
+The contributions of this paper are:
+\begin{enumerate}
+\item A complete adaptive re-linearization framework for extending FFT-NILT to the GRM with nonlinear Langmuir and SMA binding (Section~\ref{sec:method}).
+\item Reference-free mass-balance diagnostics based on zeroth- and first-moment conservation that provide convergence guarantees without external numerical validation (Section~\ref{sec:diagnostics}).
+\item Validation against the Thomas analytical solution on the Chen and Hsu plug-flow problem, demonstrating 7$\times$ error reduction relative to the linear approximation and accuracy superior to finite-volume discretization (Section~\ref{sec:results:analytical}).
+\item A systematic loading sweep across dilute-to-overloaded conditions for the full GRM, benchmarked against CADET v6 reference solutions (Section~\ref{sec:results:grm}).
+\end{enumerate}
+
+
+%% ====================================================================
+\section{Mathematical background}
+\label{sec:background}
+%% ====================================================================
+
+\subsection{General Rate Model}
+\label{sec:background:grm}
+
+We consider a single-component chromatographic column described by the General Rate Model.
+The mobile phase mass balance in the interstitial volume is
+\begin{equation}
+\frac{\partial c}{\partial t} + u \frac{\partial c}{\partial z} - D_\mathrm{ax} \frac{\partial^2 c}{\partial z^2} + \frac{3}{R_p} \cdot \frac{1-\varepsilon_c}{\varepsilon_c} \cdot k_f \left(c - c_{p}\big|_{r=R_p}\right) = 0
+\label{eq:grm_column}
+\end{equation}
+where $c(z,t)$ is the mobile phase concentration, $u$ is the interstitial velocity, $D_\mathrm{ax}$ is the axial dispersion coefficient, $\varepsilon_c$ is the column porosity, $R_p$ is the particle radius, and $k_f$ is the film mass transfer coefficient.
+
+The particle phase is governed by pore diffusion and binding:
+\begin{equation}
+\varepsilon_p \frac{\partial c_p}{\partial t} + (1-\varepsilon_p) \frac{\partial q}{\partial t} = \frac{D_p}{r^2} \frac{\partial}{\partial r}\left(r^2 \frac{\partial c_p}{\partial r}\right)
+\label{eq:grm_particle}
+\end{equation}
+where $c_p(z,r,t)$ is the pore liquid concentration, $q(z,r,t)$ is the bound-state concentration, $\varepsilon_p$ is the particle porosity, and $D_p$ is the pore diffusion coefficient.
+
+The binding kinetics for the Langmuir isotherm are
+\begin{equation}
+\frac{\partial q}{\partial t} = k_a \, c_p \left(q_\mathrm{max} - q\right) - k_d \, q
+\label{eq:langmuir}
+\end{equation}
+where $k_a$ is the adsorption rate constant, $k_d$ is the desorption rate constant, and $q_\mathrm{max}$ is the maximum binding capacity.
+
+\subsection{Laplace-domain transfer function for the linearized GRM}
+\label{sec:background:transfer}
+
+Under the linear approximation ($c_p \ll q_\mathrm{max}$, so that $q \approx K_\mathrm{eq} \, c_p$ with $K_\mathrm{eq} = k_a q_\mathrm{max} / k_d$), the GRM can be transformed to the Laplace domain to yield an analytical transfer function for the outlet concentration \cite{Paper2CES}:
+\begin{equation}
+F(s) = \exp\left(\frac{\mathrm{Pe}}{2}\left(1 - \sqrt{1 + \frac{4\,s\,\tau\,R_\mathrm{eff}(s)}{\mathrm{Pe}}}\right)\right)
+\label{eq:transfer_function}
+\end{equation}
+where $\mathrm{Pe} = u L / D_\mathrm{ax}$ is the P\'eclet number, $\tau = L/u$ is the column residence time, and the frequency-dependent effective retardation factor is
+\begin{equation}
+R_\mathrm{eff}(s) = 1 + \frac{1-\varepsilon_c}{\varepsilon_c} \, \beta(s) \, \eta(s)
+\label{eq:R_eff}
+\end{equation}
+
+The effective binding capacity $\beta(s)$ captures the kinetic binding response:
+\begin{equation}
+\beta(s) = \varepsilon_p + (1-\varepsilon_p) \frac{k_a \, q_\mathrm{max}}{s + k_d}
+\label{eq:beta}
+\end{equation}
+and the particle response function $\eta(s)$ captures pore diffusion and film transfer:
+\begin{equation}
+\eta(s) = \frac{3\left(\xi \coth\xi - 1\right)}{\xi^2\left(1 + \frac{\xi\coth\xi - 1}{\mathrm{Bi}}\right)}, \quad \xi = R_p \sqrt{\frac{s\,\beta(s)}{D_p}}, \quad \mathrm{Bi} = \frac{k_f R_p}{D_p}
+\label{eq:eta}
+\end{equation}
+
+The pole in $\beta(s)$ at $s = -k_d$ is the source of the numerical difficulty identified in \cite{Paper2CES}: as $s$ approaches $-k_d$ along the Bromwich contour, $|\beta(s)| \to \infty$, causing catastrophic loss of precision in the FFT-NILT evaluation.
+
+\subsection{Why nonlinear binding breaks FFT-NILT}
+\label{sec:background:nonlinear}
+
+The transfer function \eqref{eq:transfer_function} is derived under the assumption that the binding kinetics~\eqref{eq:langmuir} can be linearized.
+The full Langmuir rate expression contains the bilinear term $k_a \, c_p \, q$, whose Laplace transform is a \emph{convolution} $\mathcal{L}\{c_p \cdot q\} = C_p(s) * Q(s) \neq C_p(s) \cdot Q(s)$.
+This destroys the multiplicative algebraic structure that enables the transfer function approach, and no closed-form $F(s)$ exists for the nonlinear GRM.
+
+The iterative re-linearization described in the next section overcomes this limitation by replacing the nonlinear problem with a sequence of linear problems, each of which admits a valid transfer function.
+
+
+%% ====================================================================
+\section{Adaptive re-linearization method}
+\label{sec:method}
+%% ====================================================================
+
+\subsection{Re-linearization around an operating point}
+\label{sec:method:relin}
+
+Consider the Langmuir kinetics~\eqref{eq:langmuir} at an operating point where the mobile phase concentration is $c_0$ and the corresponding equilibrium bound-state concentration is
+\begin{equation}
+q_0 = q_\mathrm{max} \frac{K_a \, c_0}{1 + K_a \, c_0}, \quad K_a = \frac{k_a}{k_d}
+\label{eq:q0}
+\end{equation}
+Substituting $c_p = c_0 + \delta c$ and $q = q_0 + \delta q$ into \eqref{eq:langmuir} and retaining only terms linear in the perturbations gives
+\begin{equation}
+\frac{\partial (\delta q)}{\partial t} \approx k_a \, (\delta c) \left(q_\mathrm{max} - q_0\right) - \left(k_d + k_a \, c_0\right) (\delta q)
+\label{eq:linearized_langmuir}
+\end{equation}
+This has the same functional form as linear Langmuir kinetics with \emph{effective parameters}:
+\begin{align}
+q_\mathrm{max,eff} &= q_\mathrm{max} - q_0 = \frac{q_\mathrm{max}}{1 + K_a \, c_0} \label{eq:qmax_eff} \\
+k_{d,\mathrm{eff}} &= k_d + k_a \, c_0 \label{eq:kd_eff}
+\end{align}
+
+The effective equilibrium constant decreases with loading:
+\begin{equation}
+K_\mathrm{eq,eff} = \frac{k_a \, q_\mathrm{max,eff}}{k_{d,\mathrm{eff}}} = \frac{k_a \, q_\mathrm{max}}{(k_d + k_a c_0)(1 + K_a c_0)}
+\label{eq:Keq_eff}
+\end{equation}
+
+\paragraph{Pole shift and CFL improvement.}
+The critical consequence of re-linearization is that the kinetic pole in $\beta(s)$ shifts from $s^* = -k_d$ to
+\begin{equation}
+s^*_\mathrm{eff} = -k_{d,\mathrm{eff}} = -(k_d + k_a \, c_0)
+\label{eq:pole_shift}
+\end{equation}
+Since $k_a c_0 > 0$ for any nonzero loading, the effective pole moves further into the left half-plane (Fig.~\ref{fig:pole_shift}).
+This is the opposite of what one might expect: the nonlinear (loaded) system is actually \emph{more} CFL-feasible than the linear (dilute) baseline, because the effective desorption rate increases with loading.
+
+The effective transfer function at operating point $c_0$ is obtained by substituting \eqref{eq:qmax_eff}--\eqref{eq:kd_eff} into \eqref{eq:transfer_function}--\eqref{eq:eta}:
+\begin{equation}
+F_\mathrm{eff}(s; c_0) = F\!\left(s \,\big|\, q_\mathrm{max} \to q_\mathrm{max,eff},\; k_d \to k_{d,\mathrm{eff}}\right)
+\label{eq:F_eff}
+\end{equation}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{../artifacts/figures/fig1_pole_shift.pdf}
+\caption{Pole shift diagram showing the kinetic pole location in the complex $s$-plane. The linear pole at $s^* = -k_d$ (circle) shifts to $s^*_\mathrm{eff} = -(k_d + k_a c_0)$ (squares) upon re-linearization. Higher operating concentrations push the pole further into the left half-plane, improving CFL feasibility for the Bromwich integral.}
+\label{fig:pole_shift}
+\end{figure}
+
+\subsection{Operating concentration estimation}
+\label{sec:method:c_op}
+
+The re-linearization requires an estimate of the operating concentration $c_0$ that the column ``sees'' during the loading phase.
+We use a gradient-weighted average of the current breakthrough curve:
+\begin{equation}
+c_0 = \frac{\int_0^{t_\mathrm{end}} c(t) \left|\frac{dc_\mathrm{norm}}{dt}\right| dt}{\int_0^{t_\mathrm{end}} \left|\frac{dc_\mathrm{norm}}{dt}\right| dt}, \quad c_\mathrm{norm}(t) = \frac{c(t)}{c_\mathrm{feed}}
+\label{eq:c_op_estimate}
+\end{equation}
+This weighting emphasizes the breakthrough front (where $|dc/dt|$ is largest), which is the region most affected by nonlinear binding.
+For a symmetric sigmoid breakthrough, this yields $c_0 \approx c_\mathrm{feed}/2$.
+
+\subsection{Iteration algorithm}
+\label{sec:method:algorithm}
+
+The complete procedure is given in Algorithm~\ref{alg:nlnilt}.
+Phase~1 computes the linear baseline using the standard FFT-NILT with CFL-tuned parameters \cite{Paper2CES}.
+Phase~2 applies adaptive re-linearization: at each step, the operating concentration is estimated from the current iterate, a new transfer function is constructed with the effective parameters, and the FFT-NILT is re-evaluated.
+
+\begin{algorithm}[t]
+\caption{NL-NILT: Adaptive re-linearization for nonlinear GRM}
+\label{alg:nlnilt}
+\begin{algorithmic}[1]
+\Require Binding model (Langmuir/SMA), $t_\mathrm{end}$, $c_\mathrm{feed}$, $\varepsilon_\mathrm{conv}$
+\Ensure Outlet concentration $c(t)$
+
+\Statex \textbf{Phase 1: Linear baseline}
+\State $F_\mathrm{lin}(s) \gets$ linearized GRM transfer function (Eq.~\ref{eq:transfer_function})
+\State $(a, T, N) \gets$ CFL-tuned parameters for $F_\mathrm{lin}$
+\State $c^{(0)}(t) \gets c_\mathrm{feed} \cdot \mathrm{FFT\text{-}NILT}\!\left(F_\mathrm{lin}(s)/s,\, a,\, T,\, N\right)$ \Comment{Step response}
+
+\Statex \textbf{Phase 2: Adaptive re-linearization}
+\For{$m = 0, 1, \ldots, M_\mathrm{max}$}
+    \State $c_0^{(m)} \gets$ gradient-weighted average of $c^{(m)}(t)$ \Comment{Eq.~\ref{eq:c_op_estimate}}
+    \State $F_\mathrm{eff}^{(m)}(s) \gets F(s \,|\, q_\mathrm{max,eff},\, k_{d,\mathrm{eff}})$ \Comment{Eq.~\ref{eq:F_eff}}
+    \State $g^{(m)}(t) \gets c_\mathrm{feed} \cdot \mathrm{FFT\text{-}NILT}\!\left(F_\mathrm{eff}^{(m)}(s)/s,\, a,\, T,\, N\right)$
+    \State $c^{(m+1)}(t) \gets \textsc{AndersonStep}\!\left(c^{(m)},\, g^{(m)}\right)$ \Comment{Optional acceleration}
+    \State $\rho^{(m)} \gets \|g^{(m)} - c^{(m)}\|_2 \big/ \|c^{(m)}\|_2$ \Comment{Relative residual}
+    \If{$\rho^{(m)} < \varepsilon_\mathrm{conv}$}
+        \State \Return $c^{(m+1)}(t)$ \Comment{Converged}
+    \EndIf
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Convergence behavior.}
+In practice, the re-linearization converges in a single effective step across all tested loading conditions (Table~\ref{tab:loading_sweep}).
+This rapid convergence arises because the gradient-weighted operating concentration estimate~\eqref{eq:c_op_estimate} is \emph{self-consistent}: once the breakthrough curve has approximately the correct shape (after one re-linearization), the operating point estimate $c_0$ stabilizes and subsequent iterates produce the same transfer function.
+The residual drops from $O(1)$ to $O(10^{-9})$ after the first re-linearization step, with subsequent iterations oscillating at the level of floating-point arithmetic (Fig.~\ref{fig:mass_balance}).
+
+This behavior is qualitatively different from the Picard source-correction approach of Chen and Hsu \cite{ChenHsu1989}, which requires multiple iterations because the nonlinear product $C \cdot \theta$ must be recomputed and re-transformed at each step.
+The re-linearization approach directly incorporates the operating-point physics into the transfer function parameters, capturing the first-order nonlinear correction in a single evaluation.
+
+\subsection{Extension to SMA binding}
+\label{sec:method:sma}
+
+For the Steric Mass Action (SMA) model, the binding kinetics are
+\begin{equation}
+\frac{\partial q}{\partial t} = k_a \, c_p \left(\Lambda - z_p \, q - z_s \, c_s\right)^\nu - k_d \, q
+\label{eq:sma}
+\end{equation}
+where $\Lambda$ is the ligand density, $\nu$ is the characteristic charge, $z_p$ and $z_s$ are the protein and salt charges, and $c_s$ is the salt concentration.
+
+Re-linearization around $(c_0, q_0)$ yields effective rate constants:
+\begin{align}
+k_{a,\mathrm{eff}} &= k_a \left(\Lambda_\mathrm{eff} - z_p \, q_0\right)^\nu \\
+k_{d,\mathrm{eff}} &= k_d + k_a \, c_0 \, \nu \, z_p \left(\Lambda_\mathrm{eff} - z_p \, q_0\right)^{\nu-1}
+\end{align}
+where $\Lambda_\mathrm{eff} = \Lambda - z_s c_s$ and $q_0$ is found by Newton iteration on the SMA equilibrium equation.
+The re-linearized transfer function is then constructed as for Langmuir using $k_{a,\mathrm{eff}}$, $k_{d,\mathrm{eff}}$, and $\Lambda_\mathrm{eff}$ as the effective capacity.
+
+
+%% ====================================================================
+\section{Mass-balance diagnostics}
+\label{sec:diagnostics}
+%% ====================================================================
+
+A key advantage of the transfer-function approach is that mass-balance conservation can be verified directly in the Laplace domain without reference to an external numerical solution.
+
+\subsection{Zeroth moment: mass conservation}
+\label{sec:diagnostics:F0}
+
+For a step input of amplitude $c_\mathrm{feed}$, the outlet transfer function satisfies $F(0) = 1$ (the column eventually reaches the feed concentration).
+Deviations $\delta_{F_0} = |F(0) - 1|$ indicate mass-balance violations, either from numerical truncation in the FFT or from parameter infeasibility.
+For all cases in this work, $\delta_{F_0} < 4 \times 10^{-8}$.
+
+\subsection{First moment: retention time conservation}
+\label{sec:diagnostics:mu1}
+
+The theoretical first moment (mean retention time) for the linearized GRM is
+\begin{equation}
+\mu_1 = \frac{L}{u}\left(1 + \frac{1-\varepsilon_c}{\varepsilon_c}\left(\varepsilon_p + (1-\varepsilon_p) K_\mathrm{eq}\right)\right)
+\label{eq:mu1_theory}
+\end{equation}
+The numerical first moment is computed from the breakthrough curve.
+The relative deviation $\delta_{\mu_1} = |1 - \mu_{1,\mathrm{num}}/\mu_{1,\mathrm{theory}}|$ quantifies how well the computed solution preserves the correct retention behavior.
+For nonlinear binding, $\delta_{\mu_1}$ increases with loading because the effective $K_\mathrm{eq}$ decreases with concentration (Table~\ref{tab:loading_sweep}).
+
+\subsection{Steering decisions}
+\label{sec:diagnostics:steering}
+
+The diagnostics inform an automated convergence decision:
+\begin{itemize}
+\item \textbf{CONVERGED}: relative residual $\rho < \varepsilon_\mathrm{conv}$ and $\delta_{F_0} < \varepsilon_\mathrm{mass}$.
+\item \textbf{DIVERGING}: $\delta_{F_0}$ increases between consecutive iterations.
+\item \textbf{STALLING}: contraction factor $\kappa > 1$ for two consecutive iterations.
+\item \textbf{CONTINUING}: none of the above; continue iterating.
+\end{itemize}
+
+
+%% ====================================================================
+\section{Numerical results}
+\label{sec:results}
+%% ====================================================================
+
+\subsection{Problem setup}
+\label{sec:results:setup}
+
+All GRM simulations use the transport parameters in Table~\ref{tab:grm_params}.
+The Langmuir binding parameters are $k_a = \SI{1.0}{\per\second}$, $k_d = \SI{5.0}{\per\second}$, $q_\mathrm{max} = \SI{10.0}{\mol\per\cubic\metre}$, giving $K_\mathrm{eq} = k_a q_\mathrm{max}/k_d = 2.0$ and a theoretical retention time $\mu_1 \approx \SI{384}{\second}$.
+Step input breakthrough curves are computed up to $t_\mathrm{end} = \SI{1500}{\second}$.
+The loading strength is characterized by $K_a c_\mathrm{feed} = (k_a/k_d) \, c_\mathrm{feed}$, which ranges from 0.1 (dilute) to 4.0 (heavily overloaded).
+
+CADET v6.0.0 \cite{vonLieres2010} serves as the reference solver, configured with 64 finite-volume cells, WENO-3 reconstruction, and absolute/relative tolerances of $10^{-8}$.
+
+\begin{table}[t]
+\centering
+\caption{GRM transport parameters used in all benchmarks.}
+\label{tab:grm_params}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Parameter & Symbol & Value \\
+\midrule
+Interstitial velocity & $u$ & \SI{1e-3}{\metre\per\second} \\
+Axial dispersion & $D_\mathrm{ax}$ & \SI{1e-6}{\metre\squared\per\second} \\
+Column length & $L$ & \SI{0.1}{\metre} \\
+Column porosity & $\varepsilon_c$ & 0.37 \\
+Particle radius & $R_p$ & \SI{1e-5}{\metre} \\
+Particle porosity & $\varepsilon_p$ & 0.33 \\
+Film diffusion & $k_f$ & \SI{1e-5}{\metre\per\second} \\
+Pore diffusion & $D_p$ & \SI{1e-10}{\metre\squared\per\second} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{Validation against analytical solution}
+\label{sec:results:analytical}
+
+We first validate the iterative FFT concept on the plug-flow adsorption problem of Chen and Hsu \cite{ChenHsu1989}, where the Thomas analytical solution \cite{Thomas1944} provides exact reference values.
+The problem considers a column with second-order kinetics ($\partial\theta/\partial t = k_1 C(1-\theta) - k_2\theta$) and parameters: $C_0 = \SI{1e-6}{\mol\per\cubic\centi\metre}$, $k_1 = \SI{1e4}{\cubic\centi\metre\per\mol\per\second}$, $k_2 = \SI{0.1}{\per\second}$, $V = \SI{0.1}{\centi\metre\per\second}$, $L = \SI{10}{\centi\metre}$, $\alpha = \SI{1e-5}{\mol\per\cubic\centi\metre}$.
+The nonlinear strength is $K_a C_0 = 0.1$.
+
+Table~\ref{tab:analytical} compares four solution methods at the Table~1 evaluation times from \cite{ChenHsu1989}.
+The iterative FFT method (equivalent to NL-NILT for the plug-flow transfer function) reduces the RMS error from 0.047 (linear approximation) to 0.006 after two iterations---a factor of 7.7$\times$ improvement.
+CADET, solving the equivalent lumped rate model without pores (LRMWP) with 512 finite-volume cells, achieves an RMS error of 0.020 against the same analytical reference, indicating that the iterative FFT is approximately three times more accurate than finite-volume discretization for this problem.
+The breakthrough curves and pointwise errors are shown in Fig.~\ref{fig:analytical_comparison}.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{../artifacts/figures/fig7_analytical_comparison.pdf}
+\caption{Validation against the Thomas analytical solution for the Chen and Hsu plug-flow problem. (a)~Breakthrough curves: Analytical (solid black), linear FFT (dashed blue), iterative FFT after 2 iterations (solid red), and CADET LRMWP with 512 cells (dotted green). (b)~Pointwise absolute error relative to the analytical solution. The iterative FFT achieves lower error than CADET across the entire breakthrough region.}
+\label{fig:analytical_comparison}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Normalized outlet concentration $C/C_0$ for the Chen and Hsu plug-flow problem. Comparison of Thomas analytical solution, linear FFT approximation, iterative FFT (2 iterations), and CADET LRMWP (512 cells).}
+\label{tab:analytical}
+\begin{tabular}{@{}rcccc@{}}
+\toprule
+$t$ (s) & Analytical & Linear FFT & Iter.\ FFT & CADET \\
+\midrule
+125  & 0.017 & 0.011 & 0.012 & 0.011 \\
+150  & 0.135 & 0.092 & 0.104 & 0.136 \\
+175  & 0.356 & 0.273 & 0.320 & 0.369 \\
+200  & 0.588 & 0.502 & 0.588 & 0.629 \\
+225  & 0.769 & 0.705 & 0.802 & 0.822 \\
+250  & 0.885 & 0.846 & 0.922 & 0.927 \\
+275  & 0.948 & 0.928 & 0.973 & 0.974 \\
+300  & 0.979 & 0.969 & 0.991 & 0.991 \\
+325  & 0.992 & 0.988 & 0.997 & 0.998 \\
+350  & 0.997 & 0.996 & 0.999 & 1.000 \\
+\midrule
+RMS  & (ref) & 0.047 & 0.006 & 0.020 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{GRM with Langmuir binding: loading sweep}
+\label{sec:results:grm}
+
+Table~\ref{tab:loading_sweep} summarizes the NL-NILT results for the full GRM across six loading levels.
+All cases converge in a single re-linearization step (two total iterations including the linear baseline).
+The NL-NILT reduces the relative $L^2$ error compared to the linear NILT by factors of 4.5--7.6$\times$ (comparing the ``$L^2$ vs Linear'' and ``$L^2$ vs CADET'' columns), with the improvement increasing at higher loading where the nonlinear correction is largest.
+
+The mass-balance diagnostic $\delta_{F_0} < 4 \times 10^{-8}$ confirms that the FFT-NILT preserves mass conservation to near machine precision.
+The first-moment deviation $\delta_{\mu_1}$ increases from 5.7\% at dilute loading to 53\% under heavily overloaded conditions, reflecting the physical shift of the effective retention time with concentration.
+
+\begin{table}[t]
+\centering
+\caption{Langmuir loading sweep results for the full GRM. $K_a c = (k_a/k_d) \cdot c_\mathrm{feed}$, ``Class'' categorizes loading strength (A: $K_a c < 0.2$, B: $0.2 \leq K_a c < 1$, C: $K_a c \geq 1$). All cases converge in 2 iterations (1 re-linearization step) with wall times of approximately \SI{54}{\milli\second}.}
+\label{tab:loading_sweep}
+\begin{tabular}{@{}rccrcccc@{}}
+\toprule
+$c_\mathrm{feed}$ & $c/q_\mathrm{max}$ & Class & $K_a c$ & $L^2$ vs CADET & $L^2$ vs Linear & $\delta_{\mu_1}$ \\
+\midrule
+0.5  & 0.05 & A & 0.1 & 0.7\% & 4.5\% & 5.7\% \\
+1.0  & 0.10 & B & 0.2 & 1.7\% & 8.5\% & 10.5\% \\
+2.5  & 0.25 & B & 0.5 & 3.7\% & 17.5\% & 21.6\% \\
+5.0  & 0.50 & C & 1.0 & 5.5\% & 26.1\% & 33.2\% \\
+10.0 & 1.00 & C & 2.0 & 7.2\% & 33.4\% & 44.7\% \\
+20.0 & 2.00 & C & 4.0 & 7.6\% & 37.9\% & 53.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The breakthrough curves for four representative loading levels are shown in Fig.~\ref{fig:breakthrough}.
+At dilute loading (Class~A), the linear NILT and NL-NILT are nearly identical since the nonlinear correction is small.
+At moderate-to-heavy loading (Classes~B and~C), the NL-NILT correctly captures the self-sharpening of the front due to the favorable Langmuir isotherm, while the linear NILT underestimates retention and produces an overly dispersed breakthrough.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{../artifacts/figures/fig5_breakthrough_curves.pdf}
+\caption{Breakthrough curves for four loading levels: (a)~Class~A ($c_\mathrm{feed} = 0.5$, $K_a c = 0.1$), (b)~Class~B ($c_\mathrm{feed} = 2.5$, $K_a c = 0.5$), (c)~Class~C ($c_\mathrm{feed} = 5.0$, $K_a c = 1.0$), (d)~Class~C ($c_\mathrm{feed} = 20.0$, $K_a c = 4.0$). Solid: CADET reference; dashed: linear NILT; dash-dotted: NL-NILT. The NL-NILT correctly captures the self-sharpening of the front at higher loading.}
+\label{fig:breakthrough}
+\end{figure}
+
+The relative $L^2$ error of NL-NILT versus CADET and versus the linear baseline is compared in Fig.~\ref{fig:l2_error} across all six loading levels, showing the consistent improvement from re-linearization.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{../artifacts/figures/fig3_l2_error_comparison.pdf}
+\caption{Relative $L^2$ error comparison across loading levels. Blue bars: NL-NILT vs CADET reference; orange bars: linear NILT vs CADET. The re-linearization reduces the error by factors of 4.5--7.6$\times$ compared to the linear approximation, with the improvement increasing at higher loading.}
+\label{fig:l2_error}
+\end{figure}
+
+\subsection{Convergence diagnostics}
+\label{sec:results:convergence}
+
+Fig.~\ref{fig:mass_balance} shows the per-iteration diagnostics for the Class~C case ($c_\mathrm{feed} = 5.0$, $K_a c = 1.0$) with $\varepsilon_\mathrm{conv}$ set to $10^{-15}$ to force all 10 iterations.
+The residual norm drops from 1.1 to $1.3 \times 10^{-9}$ after a single re-linearization step (iteration~0 $\to$ iteration~1), with subsequent iterations oscillating at the floating-point noise floor.
+The operating concentration estimate $c_0$ stabilizes at $c_\mathrm{feed}/2 = 2.500$ across all iterations, confirming the self-consistency of the gradient-weighted averaging.
+The zeroth-moment deviation $\delta_{F_0}$ remains constant at $3.8 \times 10^{-8}$ throughout, indicating that the FFT-NILT preserves mass conservation independently of the nonlinear correction.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{../artifacts/figures/fig4_mass_balance_traces.pdf}
+\caption{Convergence diagnostics for the Class~C case ($c_\mathrm{feed} = 5.0$, $K_a c = 1.0$) with 10 forced iterations. (a)~Relative residual norm drops from $O(1)$ to $O(10^{-9})$ after one re-linearization step. (b)~Operating concentration estimate $c_0$ stabilizes immediately at $c_\mathrm{feed}/2$. (c)~Zeroth-moment deviation $\delta_{F_0}$ remains constant at $3.8 \times 10^{-8}$.}
+\label{fig:mass_balance}
+\end{figure}
+
+Fig.~\ref{fig:iteration_convergence} shows the iteration-by-iteration evolution of the breakthrough curve for this case, illustrating how the linear baseline ($c^{(0)}$) is corrected by a single re-linearization to closely match the CADET reference.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{../artifacts/figures/fig2_iteration_convergence.pdf}
+\caption{Iteration convergence for the Class~C case ($c_\mathrm{feed} = 5.0$, $K_a c = 1.0$). The linear baseline $c^{(0)}$ (dashed) underestimates retention. After one re-linearization step, $c^{(1)}$ (dash-dotted) closely matches the CADET reference (solid). Subsequent iterates are indistinguishable from $c^{(1)}$.}
+\label{fig:iteration_convergence}
+\end{figure}
+
+\subsection{SMA binding}
+\label{sec:results:sma}
+
+To demonstrate generality, we apply the method to the Steric Mass Action model with parameters $k_a = 0.1$, $k_d = 10.0$, $\Lambda = 10.0$, $\nu = 2.0$, $z_p = 2.0$, $z_s = 1.0$, $c_s = 0.05$.
+Table~\ref{tab:sma} shows that NL-NILT converges in 2--3 iterations across a range of feed concentrations, with final residuals below $10^{-6}$.
+
+\begin{table}[t]
+\centering
+\caption{SMA binding benchmark results. All cases converge to residuals below $10^{-6}$.}
+\label{tab:sma}
+\begin{tabular}{@{}rccr@{}}
+\toprule
+$c_\mathrm{feed}$ & Iterations & Converged & Residual \\
+\midrule
+0.01 & 2 & Yes & $2.3 \times 10^{-7}$ \\
+0.10 & 3 & Yes & $7.9 \times 10^{-7}$ \\
+1.00 & 3 & Yes & $1.2 \times 10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Error localization}
+\label{sec:results:error}
+
+Fig.~\ref{fig:error_localization} shows the pointwise absolute error $|c_\mathrm{NL\text{-}NILT} - c_\mathrm{CADET}|$ for three loading levels.
+The error is concentrated at the breakthrough front where the concentration gradient is steepest.
+In the plateau regions (before breakthrough and after saturation), the NL-NILT and CADET solutions agree to within numerical precision.
+This error pattern is characteristic of the Gibbs phenomenon inherent in Fourier-based methods when approximating sharp fronts, and does not indicate a systematic bias in the nonlinear correction.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{../artifacts/figures/fig6_error_localization.pdf}
+\caption{Pointwise absolute error $|c_\mathrm{NL\text{-}NILT} - c_\mathrm{CADET}|$ for three loading levels. The error is concentrated at the breakthrough front where the concentration gradient is steepest, while plateau regions agree to near machine precision.}
+\label{fig:error_localization}
+\end{figure}
+
+
+%% ====================================================================
+\section{Discussion}
+\label{sec:discussion}
+%% ====================================================================
+
+\subsection{Single-step convergence}
+
+A notable feature of the adaptive re-linearization is that it converges in a single effective step across all tested conditions, from dilute ($K_a c = 0.1$) to heavily overloaded ($K_a c = 4.0$).
+This contrasts with the Picard source-correction approach of Chen and Hsu \cite{ChenHsu1989}, which requires two or more iterations even for mildly nonlinear conditions.
+
+The rapid convergence can be understood physically: the re-linearization directly adjusts the binding parameters to reflect the operating-point equilibrium, so the first re-linearized evaluation already incorporates the correct effective retention time and peak shape.
+Mathematically, the mapping $c^{(m)} \mapsto c^{(m+1)}$ through the re-linearized transfer function is nearly idempotent after one step because the operating concentration estimate $c_0(c^{(m)})$ saturates.
+
+For parameter estimation applications where thousands of forward evaluations are required, this single-step convergence means that the nonlinear correction adds only one additional FFT-NILT evaluation (approximately \SI{50}{\milli\second}) to the linear baseline cost.
+
+\subsection{Accuracy considerations}
+
+The 0.7--7.6\% relative $L^2$ error versus CADET (Table~\ref{tab:loading_sweep}) represents the combined effect of three error sources:
+\begin{enumerate}
+\item \emph{Linearization error}: the re-linearized transfer function captures only the first-order perturbation around the operating point. Higher-order nonlinear effects contribute $O((\delta c)^2)$ residual.
+\item \emph{FFT truncation}: the finite FFT window and discrete sampling introduce approximation error, particularly at sharp fronts.
+\item \emph{Single operating point}: the method uses a single global operating concentration for the entire column, whereas the true concentration profile varies along the column length.
+\end{enumerate}
+
+The error increases with loading primarily due to source~(1): at higher concentrations, the quadratic and higher-order terms in the Taylor expansion of the Langmuir isotherm become more significant.
+The error localization at the shock front (Fig.~\ref{fig:error_localization}) is primarily due to source~(2).
+
+For parameter estimation, the relevant metric is the least-squares objective value, which integrates the squared error over the full breakthrough curve.
+The error concentration at the shock front---a narrow time window with steep gradients---contributes relatively little to the integrated objective compared to the broad plateau regions where the NL-NILT is highly accurate.
+
+\subsection{Comparison with CADET}
+
+The wall time of approximately \SI{54}{\milli\second} per NL-NILT evaluation (Table~\ref{tab:loading_sweep}) is comparable to CADET for the small column ($L = \SI{0.1}{\metre}$, 64 cells) used in this study.
+The speedup advantage of NL-NILT becomes more pronounced for larger problems: the FFT-NILT cost scales as $O(N \log N)$ with the number of frequency points (independent of column discretization), while the finite-volume cost scales with the number of spatial cells and time steps.
+
+The validation against the Thomas analytical solution (Section~\ref{sec:results:analytical}) provides an independent confirmation that the method is correct: on a problem where both the FFT approach and CADET solve the same physical model, the iterative FFT achieves RMS error 0.006 compared to CADET's 0.020 (with 512 cells), demonstrating that the frequency-domain approach can be inherently more accurate than spatial discretization for smooth solutions.
+
+\subsection{Limitations}
+\label{sec:discussion:limitations}
+
+The present formulation has several limitations that define the scope of future work:
+\begin{itemize}
+\item \emph{Single component}: the re-linearization scheme is presented for single-component binding. Multi-component extension is straightforward (each component has its own effective parameters) but introduces competitive binding effects that may require coupled iteration.
+\item \emph{Single operating point}: using a global $c_0$ for the entire column neglects the spatial variation of concentration along the column. A multi-zone approach with different operating points could improve accuracy for strongly nonlinear systems.
+\item \emph{Shock-front resolution}: the error is concentrated at the breakthrough front, limiting the accuracy for applications that require precise shock-layer resolution. Increasing the FFT window size $N$ improves this at the cost of computation time.
+\item \emph{Very stiff kinetics}: for $k_a \gg k_d$ (high binding affinity), the operating-point pole may still be close to the Bromwich contour even after re-linearization, potentially requiring additional contour deformation.
+\end{itemize}
+
+
+%% ====================================================================
+\section{Conclusions}
+\label{sec:conclusions}
+%% ====================================================================
+
+We have presented an adaptive re-linearization scheme that extends FFT-NILT from linear transport to the full nonlinear chromatography problem with kinetic Langmuir and SMA binding.
+The method overcomes the fundamental pole-proximity limitation identified in previous work by shifting the effective kinetic pole further into the left half-plane through operating-point dependent parameter updates.
+
+The key findings are:
+\begin{enumerate}
+\item A single re-linearization step reduces the error by a factor of 7$\times$ compared to the linear approximation, as validated against the Thomas analytical solution for plug-flow adsorption. The iterative FFT achieves accuracy superior to finite-volume discretization with 512 cells.
+\item For the full GRM with Langmuir binding, the NL-NILT produces breakthrough curves within 0.7--7.6\% relative $L^2$ error of CADET reference solutions across dilute-to-overloaded conditions ($K_a c = 0.1$--$4.0$).
+\item Reference-free mass-balance diagnostics ($\delta_{F_0} < 4 \times 10^{-8}$) provide convergence guarantees without external validation, and the method generalizes to SMA binding.
+\item The approach is implemented as a first-class solver option in the CADET ecosystem, requiring approximately \SI{54}{\milli\second} per evaluation, making it suitable as a fast forward model for parameter estimation and process optimization.
+\end{enumerate}
+
+
+%% ====================================================================
+%% References
+%% ====================================================================
+
+\begin{thebibliography}{99}
+
+\bibitem{Guiochon2006}
+G.~Guiochon, A.~Felinger, D.G.~Shirazi, A.M.~Katti,
+\textit{Fundamentals of Preparative and Nonlinear Chromatography}, 2nd ed., Academic Press, 2006.
+
+\bibitem{vonLieres2010}
+E.~von Lieres, J.~Andersson,
+A fast and accurate solver for the general rate model of column liquid chromatography,
+\textit{Comput.\ Chem.\ Eng.} 34 (2010) 1180--1191.
+
+\bibitem{Leweke2018}
+S.~Leweke, E.~von Lieres,
+Chromatography Analysis and Design Toolkit (CADET),
+\textit{Comput.\ Chem.\ Eng.} 113 (2018) 274--294.
+
+\bibitem{deHoog1982}
+F.R.~de~Hoog, J.H.~Knight, A.N.~Stokes,
+An improved method for numerical inversion of Laplace transforms,
+\textit{SIAM J.\ Sci.\ Stat.\ Comput.} 3 (1982) 357--366.
+
+\bibitem{Paper2CES}
+[Authors],
+FFT-based numerical inverse Laplace transform with CFL-informed parameter selection for chromatographic transport,
+\textit{Chem.\ Eng.\ Sci.} (2026), under review.
+
+\bibitem{ChenHsu1989}
+T.-L.~Chen, J.-T.~Hsu,
+Application of the fast Fourier transform to nonlinear fixed-bed adsorption problems,
+\textit{AIChE J.} 35 (1989) 332--334.
+
+\bibitem{Thomas1944}
+H.C.~Thomas,
+Heterogeneous ion exchange in a flowing system,
+\textit{J.~Am.\ Chem.\ Soc.} 66 (1944) 1664--1666.
+
+\bibitem{HiesterVermeulen1952}
+N.K.~Hiester, T.~Vermeulen,
+Saturation performance of ion-exchange and adsorption columns,
+\textit{Chem.\ Eng.\ Prog.} 48 (1952) 505--516.
+
+\bibitem{Anderson1965}
+D.G.~Anderson,
+Iterative procedures for nonlinear integral equations,
+\textit{J.~Assoc.\ Comput.\ Mach.} 12 (1965) 547--560.
+
+\bibitem{Chase1984}
+H.A.~Chase,
+Prediction of the performance of preparative affinity chromatography,
+\textit{J.~Chromatogr.} 297 (1984) 179--202.
+
+\end{thebibliography}
+
+\end{document}

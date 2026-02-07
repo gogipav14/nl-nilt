@@ -1,0 +1,135 @@
+{
+  "name": "convergence_traces",
+  "timestamp": "2026-02-07T12:53:21",
+  "results": [
+    {
+      "iteration": 0,
+      "residual_norm": 1.110167768939009,
+      "contraction": Infinity,
+      "c_operating": 2.5000000012502333,
+      "strategy": "relinearization+anderson",
+      "delta_F0": 3.843518758817055e-08,
+      "mu1_numerical": 256.8621727734288,
+      "mu1_theoretical": 384.3513513513513,
+      "delta_mu1": 0.3316995715760588,
+      "steering_decision": "CONTINUING"
+    },
+    {
+      "iteration": 1,
+      "residual_norm": 1.254556629990967e-09,
+      "contraction": 1.1300603972586511e-09,
+      "c_operating": 2.5000000017303305,
+      "strategy": "relinearization+anderson",
+      "delta_F0": 3.843518758817055e-08,
+      "mu1_numerical": 256.8621726737667,
+      "mu1_theoretical": 384.3513513513513,
+      "delta_mu1": 0.33169957183535836,
+      "steering_decision": "CONTINUING"
+    },
+    {
+      "iteration": 2,
+      "residual_norm": 1.2143134563824704e-09,
+      "contraction": 0.4984235900127208,
+      "c_operating": 2.5000000031093683,
+      "strategy": "relinearization+anderson",
+      "delta_F0": 3.843518758817055e-08,
+      "mu1_numerical": 256.8621726689444,
+      "mu1_theoretical": 384.3513513513513,
+      "delta_mu1": 0.3316995718479049,
+      "steering_decision": "CONTINUING"
+    },
+    {
+      "iteration": 3,
+      "residual_norm": 4.760201592666172e-10,
+      "contraction": 0.24706182982906613,
+      "c_operating": 2.5000000018288233,
+      "strategy": "relinearization+anderson",
+      "delta_F0": 3.843518758817055e-08,
+      "mu1_numerical": 256.8621726780697,
+      "mu1_theoretical": 384.3513513513513,
+      "delta_mu1": 0.33169957182416276,
+      "steering_decision": "CONTINUING"
+    },
+    {
+      "iteration": 4,
+      "residual_norm": 3.432029192682088e-10,
+      "contraction": 0.08240271716701915,
+      "c_operating": 2.5000000014609003,
+      "strategy": "relinearization+anderson",
+      "delta_F0": 3.843518758817055e-08,
+      "mu1_numerical": 256.86217267799725,
+      "mu1_theoretical": 384.3513513513513,
+      "delta_mu1": 0.33169957182435134,
+      "steering_decision": "CONTINUING"
+    },
+    {
+      "iteration": 5,
+      "residual_norm": 5.646687345518284e-10,
+      "contraction": 13.29485513222735,
+      "c_operating": 2.500000001423838,
+      "strategy": "relinearization+anderson",
+      "delta_F0": 3.843518758817055e-08,
+      "mu1_numerical": 256.8621726734875,
+      "mu1_theoretical": 384.3513513513513,
+      "delta_mu1": 0.3316995718360847,
+      "steering_decision": "CONTINUING"
+    },
+    {
+      "iteration": 6,
+      "residual_norm": 4.399462861383715e-10,
+      "contraction": 0.29737460363329915,
+      "c_operating": 2.5000000014976753,
+      "strategy": "relinearization+anderson",
+      "delta_F0": 3.843518758817055e-08,
+      "mu1_numerical": 256.8621726745504,
+      "mu1_theoretical": 384.3513513513513,
+      "delta_mu1": 0.3316995718333194,
+      "steering_decision": "CONTINUING"
+    },
+    {
+      "iteration": 7,
+      "residual_norm": 8.086131594485951e-10,
+      "contraction": 2.084254726806588,
+      "c_operating": 2.5000000016077872,
+      "strategy": "relinearization+anderson",
+      "delta_F0": 3.843518758817055e-08,
+      "mu1_numerical": 256.86217267196037,
+      "mu1_theoretical": 384.3513513513513,
+      "delta_mu1": 0.33169957184005805,
+      "steering_decision": "CONTINUING"
+    },
+    {
+      "iteration": 8,
+      "residual_norm": 2.4951870191294764e-10,
+      "contraction": 2.6210376921108054,
+      "c_operating": 2.5000000016750468,
+      "strategy": "relinearization+anderson",
+      "delta_F0": 3.843518758817055e-08,
+      "mu1_numerical": 256.86217269067834,
+      "mu1_theoretical": 384.3513513513513,
+      "delta_mu1": 0.3316995717913579,
+      "steering_decision": "CONTINUING"
+    },
+    {
+      "iteration": 9,
+      "residual_norm": 3.581096352180308e-10,
+      "contraction": 0.631175711233015,
+      "c_operating": 2.5000000017253683,
+      "strategy": "relinearization+anderson",
+      "delta_F0": 3.843518758817055e-08,
+      "mu1_numerical": 256.8621726860282,
+      "mu1_theoretical": 384.3513513513513,
+      "delta_mu1": 0.3316995718034565,
+      "steering_decision": "CONTINUING"
+    }
+  ],
+  "summary": {
+    "n_iterations": 10,
+    "converged": false,
+    "strategy": "relinearization+anderson",
+    "c_feed": 5.0,
+    "ka": 1.0,
+    "kd": 5.0,
+    "qmax": 10.0
+  }
+}
