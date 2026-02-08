@@ -169,7 +169,7 @@ def figure2_iteration_convergence(data_dir: Path, output_dir: Path):
     ax.legend(fontsize=8)
     ax.xaxis.set_minor_locator(AutoMinorLocator())
     ax.yaxis.set_minor_locator(AutoMinorLocator())
-    ax.set_title("Iteration convergence (Class B Langmuir)")
+    ax.set_title("Iteration convergence (Class C Langmuir)")
 
     fig.tight_layout()
     fig.savefig(output_dir / "fig2_iteration_convergence.pdf")
@@ -301,8 +301,8 @@ def figure4_mass_balance_traces(data_dir: Path, output_dir: Path):
 
 def figure5_breakthrough_curves(data_dir: Path, output_dir: Path):
     """Breakthrough curves: NL-NILT vs CADET for 4 loading levels."""
-    c_feed_targets = [0.5, 2.5, 5.0, 10.0]
-    labels = ["A: $c_f$=0.5", "B: $c_f$=2.5", "B: $c_f$=5.0", "C: $c_f$=10.0"]
+    c_feed_targets = [0.5, 2.5, 5.0, 20.0]
+    labels = ["A: $c_f$=0.5", "B: $c_f$=2.5", "C: $c_f$=5.0", "C: $c_f$=20.0"]
 
     fig, axes = plt.subplots(2, 2, figsize=(6.5, 5))
 
