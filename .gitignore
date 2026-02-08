@@ -27,6 +27,10 @@ venv/
 *.swp
 *.swo
 
+# Manuscript (not public)
+paper/nl_nilt_paper.tex
+paper/nl_nilt_paper.pdf
+
 # LaTeX build artifacts
 paper/*.aux
 paper/*.log
