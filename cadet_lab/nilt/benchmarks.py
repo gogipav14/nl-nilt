@@ -236,18 +236,20 @@ def grm_sma_transfer(
     Linearizes SMA around base state (c₀, q₀) for small perturbations.
     Uses effective rate constants k_a_eff, k_d_eff and treats as Langmuir.
 
-    SMA binding kinetics:
-        ∂q/∂t = ka · c · (Λ - z_protein·q - z_salt·c_salt)^nu - kd · q
+    CADET SMA binding kinetics:
+        ∂q/∂t = ka · c · (Λ - z_protein·q)^nu - kd · q · c_salt^(nu/z_salt)
 
     Linearization around base state gives:
         ∂(δq)/∂t = k_a_eff · δc - k_d_eff · δq
+
+    where:
+        k_a_eff = ka · shield₀^nu
+        k_d_eff = kd · c_salt^nu + ka · c₀ · nu · z_protein · shield₀^(nu-1)
 
     Valid for:
     - Small concentration perturbations around base state
     - Single protein component + salt
     - Dilute to moderate loading
-
-    Mathematical derivation in docs/GRM_TRANSFER_FUNCTIONS_DERIVATION.md
 
     Args:
         velocity: Interstitial velocity [m/s].
@@ -260,9 +262,9 @@ def grm_sma_transfer(
         pore_diffusion: Pore diffusion coefficient [m²/s].
         ka: SMA adsorption constant [m³/(mol·s)].
         kd: SMA desorption rate constant [1/s].
-        Lambda: Steric capacity [mol/m³].
+        Lambda: Ionic capacity [mol/m³].
         nu: Characteristic charge [-].
-        z_protein: Protein charge [-].
+        z_protein: Protein charge (nu + sigma in CADET) [-].
         z_salt: Salt valence [-].
         c0: Base protein concentration for linearization [mol/m³].
         c_salt: Salt concentration [mol/m³].
@@ -271,30 +273,28 @@ def grm_sma_transfer(
         Callable F(s) for the transfer function.
 
     Example:
-        >>> # IgG on Protein A resin (typical values)
         >>> F = grm_sma_transfer(
         ...     velocity=1e-4, dispersion=1e-7, length=0.05,
         ...     ka=1e3, kd=0.1, Lambda=100.0, nu=4.5,
         ...     z_protein=5.0, c0=1e-6, c_salt=0.15
         ... )
     """
-    # Compute base state
-    Lambda_eff = Lambda - z_salt * c_salt  # Effective capacity with salt
+    # CADET convention: c_salt enters the desorption rate as c_salt^(nu/z_salt)
+    c_salt_nu = c_salt ** (nu / z_salt)
 
-    # Equilibrium: q0 = K_eq * c0 * (Lambda_eff - z_protein*q0)^nu
-    # Low-loading approximation: q0 ≈ K_eq * c0 * Lambda_eff^nu / (1 + ...)
-    K_eq = ka / kd
+    # Equilibrium: ka * c * shield^nu = kd * q * c_salt^nu
+    # => q = K_eq_salt * c * shield^nu  where K_eq_salt = ka / (kd * c_salt^nu)
+    K_eq_salt = ka / (kd * c_salt_nu) if kd > 0 else 0.0
 
-    # Iterative solution for base state (Newton's method, 1-2 iterations usually sufficient)
+    # Newton iteration for base state q0
     q0 = 0.0
-    for _ in range(5):
-        shield = Lambda_eff - z_protein * q0
+    for _ in range(10):
+        shield = Lambda - z_protein * q0
         if shield <= 0:
-            # Invalid state (overloaded), use low-loading limit
-            q0 = K_eq * c0 * Lambda_eff**nu / (1 + K_eq * c0 * nu * z_protein * Lambda_eff**(nu-1))
+            q0 = K_eq_salt * c0 * Lambda**nu / (1 + K_eq_salt * c0 * nu * z_protein * Lambda**(nu-1))
             break
-        f_q = q0 - K_eq * c0 * shield**nu
-        df_q = 1.0 + K_eq * c0 * nu * z_protein * shield**(nu - 1)
+        f_q = q0 - K_eq_salt * c0 * shield**nu
+        df_q = 1.0 + K_eq_salt * c0 * nu * z_protein * shield**(nu - 1)
         q0_new = q0 - f_q / df_q
         if abs(q0_new - q0) < 1e-12:
             q0 = q0_new
@@ -302,17 +302,16 @@ def grm_sma_transfer(
         q0 = q0_new
 
     # Linearized rate constants around base state
-    shield_term = Lambda_eff - z_protein * q0
+    shield_term = Lambda - z_protein * q0
 
     if shield_term <= 0:
-        # Invalid state, fall back to pure Langmuir
-        k_a_eff = ka * Lambda_eff**nu
-        k_d_eff = kd
+        k_a_eff = ka * Lambda**nu
+        k_d_eff = kd * c_salt_nu
     else:
         k_a_eff = ka * shield_term**nu
-        k_d_eff = kd + ka * c0 * nu * z_protein * shield_term**(nu - 1)
+        k_d_eff = kd * c_salt_nu + ka * c0 * nu * z_protein * shield_term**(nu - 1)
 
-    # Use Langmuir GRM with effective rate constants
+    # Map to Langmuir GRM: ka_L*qmax_L = k_a_eff, kd_L = k_d_eff
     return grm_langmuir_transfer(
         velocity=velocity,
         dispersion=dispersion,
@@ -324,7 +323,7 @@ def grm_sma_transfer(
         pore_diffusion=pore_diffusion,
         ka=k_a_eff,
         kd=k_d_eff,
-        qmax=Lambda_eff,  # Effective capacity as qmax
+        qmax=1.0,
     )
 
 

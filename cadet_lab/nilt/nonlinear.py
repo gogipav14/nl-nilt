@@ -210,19 +210,23 @@ class SMABinding(BindingModel):
         self.film_diffusion = film_diffusion
         self.pore_diffusion = pore_diffusion
 
-        self.Lambda_eff = Lambda - z_salt * c_salt
+        # CADET SMA convention: c_salt^(nu/z_salt) enters the desorption rate,
+        # NOT subtracted from Lambda.  See StericMassActionBinding.cpp.
+        self.c_salt_nu = c_salt ** (nu / z_salt)
         self._compute_base_state()
 
     def _compute_base_state(self):
-        K_eq = self.ka / self.kd if self.kd > 0 else 0.0
+        # CADET SMA equilibrium: ka * c * shield^nu = kd * q * c_salt^nu
+        # => q = K_eq_salt * c * shield^nu  where K_eq_salt = ka / (kd * c_salt^nu)
+        K_eq_salt = self.ka / (self.kd * self.c_salt_nu) if self.kd > 0 else 0.0
         q0 = 0.0
         for _ in range(10):
-            shield = self.Lambda_eff - self.z_protein * q0
+            shield = self.Lambda - self.z_protein * q0
             if shield <= 0:
                 q0 = 0.0
                 break
-            f_q = q0 - K_eq * self.c0 * shield ** self.nu
-            df_q = 1.0 + K_eq * self.c0 * self.nu * self.z_protein * shield ** (self.nu - 1)
+            f_q = q0 - K_eq_salt * self.c0 * shield ** self.nu
+            df_q = 1.0 + K_eq_salt * self.c0 * self.nu * self.z_protein * shield ** (self.nu - 1)
             q0_new = q0 - f_q / df_q
             if abs(q0_new - q0) < 1e-12:
                 q0 = q0_new
@@ -230,21 +234,26 @@ class SMABinding(BindingModel):
             q0 = q0_new
         self.q0 = max(q0, 0.0)
 
-        shield = self.Lambda_eff - self.z_protein * self.q0
+        # Linearized rate constants:
+        #   k_a_eff = d(forward)/dc = ka * shield^nu
+        #   k_d_eff = -d(rate)/dq   = kd * c_salt^nu + ka * c0 * nu * z_p * shield^(nu-1)
+        shield = self.Lambda - self.z_protein * self.q0
         if shield > 0:
             self.k_a_eff = self.ka * shield ** self.nu
-            self.k_d_eff = self.kd + self.ka * self.c0 * self.nu * self.z_protein * shield ** (self.nu - 1)
+            self.k_d_eff = (self.kd * self.c_salt_nu
+                            + self.ka * self.c0 * self.nu * self.z_protein
+                            * shield ** (self.nu - 1))
         else:
-            self.k_a_eff = self.ka * self.Lambda_eff ** self.nu
-            self.k_d_eff = self.kd
+            self.k_a_eff = self.ka * self.Lambda ** self.nu
+            self.k_d_eff = self.kd * self.c_salt_nu
 
     def equilibrium(self, c: np.ndarray) -> np.ndarray:
         q = np.zeros_like(c)
-        K_eq = self.ka / self.kd if self.kd > 0 else 0.0
+        K_eq_salt = self.ka / (self.kd * self.c_salt_nu) if self.kd > 0 else 0.0
         for _ in range(10):
-            shield = np.maximum(self.Lambda_eff - self.z_protein * q, 1e-30)
-            f_q = q - K_eq * c * shield ** self.nu
-            df_q = 1.0 + K_eq * c * self.nu * self.z_protein * shield ** (self.nu - 1)
+            shield = np.maximum(self.Lambda - self.z_protein * q, 1e-30)
+            f_q = q - K_eq_salt * c * shield ** self.nu
+            df_q = 1.0 + K_eq_salt * c * self.nu * self.z_protein * shield ** (self.nu - 1)
             dq = f_q / df_q
             q = np.maximum(q - dq, 0.0)
             if np.max(np.abs(dq)) < 1e-12:
@@ -254,14 +263,16 @@ class SMABinding(BindingModel):
     def nonlinear_residual(
         self, c: np.ndarray, q: np.ndarray,
     ) -> np.ndarray:
-        shield = np.maximum(self.Lambda_eff - self.z_protein * q, 0.0)
-        full_rate = self.ka * c * shield ** self.nu - self.kd * q
+        shield = np.maximum(self.Lambda - self.z_protein * q, 0.0)
+        full_rate = self.ka * c * shield ** self.nu - self.kd * q * self.c_salt_nu
         linear_rate = self.k_a_eff * c - self.k_d_eff * q
         return full_rate - linear_rate
 
     def linear_transfer_function(self) -> Callable[[complex], complex]:
         from .benchmarks import grm_langmuir_transfer
 
+        # Map to Langmuir: ka_L*qmax_L = k_a_eff, kd_L = k_d_eff
+        # Using qmax=1 so ka_L carries the full effective rate.
         return grm_langmuir_transfer(
             velocity=self.velocity,
             dispersion=self.dispersion,
@@ -273,12 +284,16 @@ class SMABinding(BindingModel):
             pore_diffusion=self.pore_diffusion,
             ka=self.k_a_eff,
             kd=self.k_d_eff,
-            qmax=self.Lambda_eff,
+            qmax=1.0,
         )
 
     def effective_keq(self) -> float:
+        """Henry constant dq/dc at equilibrium.
+
+        Dilute limit: K_eq = ka * Lambda^nu / (kd * c_salt^nu).
+        """
         if self.k_d_eff > 0:
-            return self.k_a_eff * self.Lambda_eff / self.k_d_eff
+            return self.k_a_eff / self.k_d_eff
         return 0.0
 
     def relinearized_transfer_function(
@@ -287,15 +302,15 @@ class SMABinding(BindingModel):
         """Re-linearize SMA around operating point c_operating."""
         from .benchmarks import grm_langmuir_transfer
 
-        # Newton for q_0 at c_operating
-        K_eq = self.ka / self.kd if self.kd > 0 else 0.0
+        # Newton for q_0 at c_operating using CADET SMA equilibrium
+        K_eq_salt = self.ka / (self.kd * self.c_salt_nu) if self.kd > 0 else 0.0
         q0 = 0.0
         for _ in range(10):
-            shield = self.Lambda_eff - self.z_protein * q0
+            shield = self.Lambda - self.z_protein * q0
             if shield <= 0:
                 break
-            f_q = q0 - K_eq * c_operating * shield ** self.nu
-            df_q = 1.0 + K_eq * c_operating * self.nu * self.z_protein * shield ** (self.nu - 1)
+            f_q = q0 - K_eq_salt * c_operating * shield ** self.nu
+            df_q = 1.0 + K_eq_salt * c_operating * self.nu * self.z_protein * shield ** (self.nu - 1)
             q0_new = q0 - f_q / df_q
             if abs(q0_new - q0) < 1e-12:
                 q0 = q0_new
@@ -303,9 +318,11 @@ class SMABinding(BindingModel):
             q0 = q0_new
         q0 = max(q0, 0.0)
 
-        shield = max(self.Lambda_eff - self.z_protein * q0, 1e-30)
+        shield = max(self.Lambda - self.z_protein * q0, 1e-30)
         ka_eff = self.ka * shield ** self.nu
-        kd_eff = self.kd + self.ka * c_operating * self.nu * self.z_protein * shield ** (self.nu - 1)
+        kd_eff = (self.kd * self.c_salt_nu
+                  + self.ka * c_operating * self.nu * self.z_protein
+                  * shield ** (self.nu - 1))
 
         return grm_langmuir_transfer(
             velocity=self.velocity,
@@ -318,7 +335,7 @@ class SMABinding(BindingModel):
             pore_diffusion=self.pore_diffusion,
             ka=ka_eff,
             kd=kd_eff,
-            qmax=self.Lambda_eff,
+            qmax=1.0,
         )
 
 
