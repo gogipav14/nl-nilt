@@ -492,9 +492,18 @@ def _estimate_operating_concentration(
 def _nilt_eval_at_params(
     F: Callable, a: float, T: float, N: int,
     t_eval: np.ndarray, c_feed: float, step_input: bool,
+    pulse_duration: Optional[float] = None,
 ) -> np.ndarray:
-    """Evaluate FFT-NILT at fixed parameters and interpolate to t_eval."""
-    if step_input:
+    """Evaluate FFT-NILT at fixed parameters and interpolate to t_eval.
+
+    If pulse_duration is provided (> 0), evaluates the rectangular-pulse
+    response F(s) * (1 - exp(-s*t_pulse)) / s. Otherwise uses step (F/s)
+    or impulse (F) according to step_input.
+    """
+    if pulse_duration is not None and pulse_duration > 0.0:
+        tp = float(pulse_duration)
+        F_solve = lambda s, _F=F, _tp=tp: _F(s) * (1.0 - np.exp(-s * _tp)) / s
+    elif step_input:
         F_solve = lambda s, _F=F: _F(s) / s
     else:
         F_solve = F
@@ -519,6 +528,7 @@ def _solve_relinearization(
     max_iterations: int,
     eps_conv: float,
     anderson_depth: int,
+    pulse_duration: Optional[float] = None,
 ) -> tuple:
     """Picard iteration with adaptive re-linearization + Anderson acceleration.
 
@@ -540,7 +550,10 @@ def _solve_relinearization(
         F_relin = binding.relinearized_transfer_function(c_op)
 
         # Solve with re-linearized transfer function (one Picard step)
-        g_c = _nilt_eval_at_params(F_relin, a, T, N, t_eval, c_feed, step_input)
+        g_c = _nilt_eval_at_params(
+            F_relin, a, T, N, t_eval, c_feed, step_input,
+            pulse_duration=pulse_duration,
+        )
         g_c = np.maximum(g_c, 0.0)
 
         # Anderson acceleration
@@ -600,6 +613,7 @@ def _solve_picard_direct(
     step_input: bool,
     max_iterations: int,
     eps_conv: float,
+    pulse_duration: Optional[float] = None,
 ) -> tuple:
     """Direct Picard iteration: re-linearize without Anderson acceleration."""
     c_current = c_lin.copy()
@@ -610,7 +624,10 @@ def _solve_picard_direct(
     for m in range(max_iterations):
         c_op = _estimate_operating_concentration(t_eval, c_current, c_feed)
         F_relin = binding.relinearized_transfer_function(c_op)
-        c_next = _nilt_eval_at_params(F_relin, a, T, N, t_eval, c_feed, step_input)
+        c_next = _nilt_eval_at_params(
+            F_relin, a, T, N, t_eval, c_feed, step_input,
+            pulse_duration=pulse_duration,
+        )
         c_next = np.maximum(c_next, 0.0)
 
         if c_prev is not None:
@@ -667,6 +684,7 @@ def nl_nilt_solve(
     step_input: bool = True,
     strategy: str = "auto",
     anderson_depth: int = 5,
+    pulse_duration: Optional[float] = None,
 ) -> NLNiltResult:
     """Solve nonlinear chromatography via iterative re-linearization.
 
@@ -699,7 +717,10 @@ def nl_nilt_solve(
     # ------------------------------------------------------------------
     F_lin = binding.linear_transfer_function()
 
-    if step_input:
+    if pulse_duration is not None and pulse_duration > 0.0:
+        _tp = float(pulse_duration)
+        F_lin_solve = lambda s, _F=F_lin, _tp=_tp: _F(s) * (1.0 - np.exp(-s * _tp)) / s
+    elif step_input:
         F_lin_solve = lambda s, _F=F_lin: _F(s) / s
     else:
         F_lin_solve = F_lin
@@ -784,6 +805,7 @@ def nl_nilt_solve(
             max_iterations=max_iterations,
             eps_conv=eps_conv,
             anderson_depth=anderson_depth,
+            pulse_duration=pulse_duration,
         )
         used_strategy = "relinearization+anderson"
 
@@ -813,6 +835,7 @@ def nl_nilt_solve(
             max_iterations=max_iterations,
             eps_conv=eps_conv,
             anderson_depth=anderson_depth,
+            pulse_duration=pulse_duration,
         )
         used_strategy = "relinearization+anderson"
 
@@ -823,6 +846,7 @@ def nl_nilt_solve(
             step_input=step_input,
             max_iterations=max_iterations,
             eps_conv=eps_conv,
+            pulse_duration=pulse_duration,
         )
         used_strategy = "picard_direct"
 

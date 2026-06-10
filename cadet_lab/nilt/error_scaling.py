@@ -820,3 +820,290 @@ def summarize_results(results: list[BenchmarkResult]) -> str:
             f"{r.cadet_wall_ms:>9.1f}"
         )
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Pulse-input extension: CADET config generator and benchmark runner
+# ---------------------------------------------------------------------------
+
+def _create_nonlinear_langmuir_pulse_config(
+    output_path: Path,
+    ka: float, kd: float, qmax: float,
+    c_feed: float,
+    pulse_duration: float,
+    transport: Optional[dict] = None,
+    n_times: int = 1001,
+    end_time: float = 500.0,
+    n_col: int = 64,
+) -> Path:
+    """Create CADET config with rectangular pulse injection (Langmuir).
+
+    Multi-section inlet: c=c_feed on [0, t_pulse], c=0 on [t_pulse, t_end].
+    """
+    DEFAULT_TRANSPORT = dict(
+        velocity=1e-3, dispersion=1e-6, length=0.1, col_porosity=0.37,
+        par_radius=1e-5, par_porosity=0.33, film_diffusion=1e-5,
+        pore_diffusion=1e-10,
+    )
+    if transport is None:
+        transport = DEFAULT_TRANSPORT
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    solution_times = np.linspace(0, end_time, n_times)
+    flow_rate = transport["velocity"] * transport["col_porosity"] * 1e-4
+
+    with h5py.File(output_path, "w") as f:
+        inp = f.create_group("input")
+        model = inp.create_group("model")
+        solver = inp.create_group("solver")
+        ret = inp.create_group("return")
+
+        model.create_dataset("NUNITS", data=3)
+
+        # Unit 000: INLET with two sections
+        u0 = model.create_group("unit_000")
+        _write_str(u0, "UNIT_TYPE", "INLET")
+        _write_str(u0, "INLET_TYPE", "PIECEWISE_CUBIC_POLY")
+        u0.create_dataset("NCOMP", data=1)
+        # Section 0: pulse on
+        sec0 = u0.create_group("sec_000")
+        sec0.create_dataset("CONST_COEFF", data=[c_feed])
+        sec0.create_dataset("LIN_COEFF", data=[0.0])
+        sec0.create_dataset("QUAD_COEFF", data=[0.0])
+        sec0.create_dataset("CUBE_COEFF", data=[0.0])
+        # Section 1: washout
+        sec1 = u0.create_group("sec_001")
+        sec1.create_dataset("CONST_COEFF", data=[0.0])
+        sec1.create_dataset("LIN_COEFF", data=[0.0])
+        sec1.create_dataset("QUAD_COEFF", data=[0.0])
+        sec1.create_dataset("CUBE_COEFF", data=[0.0])
+
+        # Unit 001: GRM
+        u1 = model.create_group("unit_001")
+        _write_str(u1, "UNIT_TYPE", "GENERAL_RATE_MODEL")
+        u1.create_dataset("NCOMP", data=1)
+        u1.create_dataset("NPARTYPE", data=1)
+        u1.create_dataset("COL_LENGTH", data=transport["length"])
+        u1.create_dataset("COL_POROSITY", data=transport["col_porosity"])
+        u1.create_dataset("CROSS_SECTION_AREA", data=1e-4)
+        u1.create_dataset("COL_DISPERSION", data=transport["dispersion"])
+        u1.create_dataset("VELOCITY", data=transport["velocity"])
+        u1.create_dataset("INIT_C", data=[0.0])
+        u1.create_dataset("INIT_CS", data=[0.0])
+
+        disc = u1.create_group("discretization")
+        _write_str(disc, "SPATIAL_METHOD", "FV")
+        disc.create_dataset("USE_ANALYTIC_JACOBIAN", data=1)
+        disc.create_dataset("NCOL", data=n_col)
+        _write_str(disc, "RECONSTRUCTION", "WENO")
+        disc.create_dataset("GS_TYPE", data=1)
+        disc.create_dataset("MAX_KRYLOV", data=0)
+        disc.create_dataset("MAX_RESTARTS", data=10)
+        disc.create_dataset("SCHUR_SAFETY", data=1e-8)
+        weno = disc.create_group("weno")
+        weno.create_dataset("BOUNDARY_MODEL", data=0)
+        weno.create_dataset("WENO_EPS", data=1e-10)
+        weno.create_dataset("WENO_ORDER", data=3)
+
+        pt = u1.create_group("particle_type_000")
+        _write_str(pt, "PAR_GEOM", "SPHERE")
+        pt.create_dataset("PAR_POROSITY", data=transport["par_porosity"])
+        pt.create_dataset("PAR_RADIUS", data=transport["par_radius"])
+        pt.create_dataset("PAR_CORERADIUS", data=0.0)
+        pt.create_dataset("NBOUND", data=[1])
+        pt.create_dataset("FILM_DIFFUSION", data=[transport["film_diffusion"]])
+        pt.create_dataset("FILM_DIFFUSION_MULTIPLEX", data=0)
+        pt.create_dataset("PORE_DIFFUSION", data=[transport["pore_diffusion"]])
+        pt.create_dataset("SURFACE_DIFFUSION", data=[0.0])
+        pt.create_dataset("HAS_FILM_DIFFUSION", data=1)
+        pt.create_dataset("HAS_PORE_DIFFUSION", data=1)
+        pt.create_dataset("HAS_SURFACE_DIFFUSION", data=0)
+
+        _write_str(pt, "ADSORPTION_MODEL", "MULTI_COMPONENT_LANGMUIR")
+        ads = pt.create_group("adsorption")
+        ads.create_dataset("IS_KINETIC", data=1)
+        ads.create_dataset("MCL_KA", data=[ka])
+        ads.create_dataset("MCL_KD", data=[kd])
+        ads.create_dataset("MCL_QMAX", data=[qmax])
+
+        par_disc = pt.create_group("discretization")
+        _write_str(par_disc, "PAR_DISC_TYPE", "EQUIDISTANT_PAR")
+        par_disc.create_dataset("NCELLS", data=4)
+        par_disc.create_dataset("SPATIAL_METHOD", data=0)
+        par_disc.create_dataset("FV_BOUNDARY_ORDER", data=2)
+
+        # Unit 002: OUTLET
+        u2 = model.create_group("unit_002")
+        _write_str(u2, "UNIT_TYPE", "OUTLET")
+        u2.create_dataset("NCOMP", data=1)
+
+        # Connections
+        conn = model.create_group("connections")
+        conn.create_dataset("NSWITCHES", data=1)
+        sw = conn.create_group("switch_000")
+        sw.create_dataset("SECTION", data=0)
+        sw.create_dataset("CONNECTIONS", data=[
+            0, 1, -1, -1, flow_rate,
+            1, 2, -1, -1, flow_rate,
+        ])
+
+        msolver = model.create_group("solver")
+        msolver.create_dataset("GS_TYPE", data=1)
+        msolver.create_dataset("MAX_KRYLOV", data=0)
+        msolver.create_dataset("MAX_RESTARTS", data=10)
+        msolver.create_dataset("SCHUR_SAFETY", data=1e-8)
+
+        solver.create_dataset("NTHREADS", data=1)
+        solver.create_dataset("USER_SOLUTION_TIMES", data=solution_times)
+        sections = solver.create_group("sections")
+        sections.create_dataset("NSEC", data=2)
+        sections.create_dataset(
+            "SECTION_TIMES",
+            data=[0.0, float(pulse_duration), float(end_time)],
+        )
+        # Discontinuity at the pulse-end transition
+        sections.create_dataset("SECTION_CONTINUITY", data=[0])
+        ti = solver.create_group("time_integrator")
+        ti.create_dataset("ABSTOL", data=1e-8)
+        ti.create_dataset("ALGTOL", data=1e-10)
+        ti.create_dataset("RELTOL", data=1e-8)
+        ti.create_dataset("INIT_STEP_SIZE", data=1e-6)
+        ti.create_dataset("MAX_STEPS", data=500000)
+
+        ret.create_dataset("SPLIT_COMPONENTS_DATA", data=0)
+        ret.create_dataset("SPLIT_PORTS_DATA", data=0)
+        ret.create_dataset("WRITE_SOLVER_STATISTICS", data=1)
+        for uname in ["unit_000", "unit_001", "unit_002"]:
+            ur = ret.create_group(uname)
+            ur.create_dataset("WRITE_SOLUTION_INLET", data=1)
+            ur.create_dataset("WRITE_SOLUTION_OUTLET", data=1)
+            ur.create_dataset("WRITE_SOLUTION_BULK", data=0)
+            ur.create_dataset("WRITE_SOLUTION_PARTICLE", data=0)
+            ur.create_dataset("WRITE_SOLUTION_SOLID", data=0)
+            ur.create_dataset("WRITE_SOLUTION_FLUX", data=0)
+            ur.create_dataset("WRITE_SOLUTION_VOLUME", data=0)
+            ur.create_dataset("WRITE_COORDINATES", data=0)
+            ur.create_dataset("WRITE_SENS_OUTLET", data=0)
+
+    return output_path
+
+
+@dataclass
+class PulseBenchmarkResult:
+    """Result from a single pulse NL-NILT vs CADET comparison."""
+    c_feed: float
+    pulse_duration: float
+    NL_star: float
+    nilt_converged: bool
+    nilt_iterations: int
+    nilt_wall_ms: float
+    nilt_t: np.ndarray
+    nilt_c: np.ndarray
+    cadet_t: np.ndarray
+    cadet_c: np.ndarray
+    cadet_wall_ms: float
+    rel_l2_error: float = np.nan
+
+
+def run_pulse_benchmarks(
+    cadet_cli: str,
+    output_dir: Path,
+    pset: Optional[ParameterSet] = None,
+    cases: Optional[list[tuple[float, float]]] = None,
+    t_end: float = 1500.0,
+) -> list[PulseBenchmarkResult]:
+    """Run NL-NILT vs CADET pulse benchmarks.
+
+    cases: list of (c_feed, pulse_duration) tuples. Defaults to a 5-case
+    sweep covering dilute (linear-limit) through overloaded conditions.
+    """
+    if pset is None:
+        pset = PARAMETER_SETS["set1_analytical"]
+    if cases is None:
+        cases = [
+            (0.05, 50.0),    # dilute / linear-limit (NL* ~ 0.01)
+            (1.0, 50.0),     # mild   (NL* = 0.17)
+            (5.0, 50.0),     # moderate (NL* = 0.5)
+            (20.0, 50.0),    # overloaded (NL* = 0.8)
+            (5.0, 200.0),    # pulse-duration sensitivity
+        ]
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+
+    for i, (c_feed, t_pulse) in enumerate(cases):
+        K_a = pset.ka / pset.kd
+        A = K_a * c_feed
+        NL_star = A / (1.0 + A)
+
+        print(f"[{i+1}/{len(cases)}] c_feed={c_feed}, t_pulse={t_pulse}s, NL*={NL_star:.3f}")
+
+        # NL-NILT pulse solve
+        binding = LangmuirBinding(
+            ka=pset.ka, kd=pset.kd, qmax=pset.qmax,
+            velocity=pset.velocity, dispersion=pset.dispersion, length=pset.length,
+            col_porosity=pset.col_porosity, par_radius=pset.par_radius,
+            par_porosity=pset.par_porosity, film_diffusion=pset.film_diffusion,
+            pore_diffusion=pset.pore_diffusion,
+        )
+        t0 = time.perf_counter()
+        nilt_result = nl_nilt_solve(
+            binding, t_end=t_end, c_feed=c_feed,
+            pulse_duration=t_pulse, max_iterations=30, eps_conv=1e-6,
+        )
+        nilt_wall = (time.perf_counter() - t0) * 1000
+
+        # CADET reference
+        tag = f"pulse_cf{c_feed:.3f}_tp{t_pulse:.0f}"
+        cfg_path = output_dir / f"cadet_{tag}.h5"
+        _create_nonlinear_langmuir_pulse_config(
+            cfg_path, ka=pset.ka, kd=pset.kd, qmax=pset.qmax,
+            c_feed=c_feed, pulse_duration=t_pulse,
+            transport=dict(
+                velocity=pset.velocity, dispersion=pset.dispersion,
+                length=pset.length, col_porosity=pset.col_porosity,
+                par_radius=pset.par_radius, par_porosity=pset.par_porosity,
+                film_diffusion=pset.film_diffusion,
+                pore_diffusion=pset.pore_diffusion,
+            ),
+            end_time=t_end, n_col=64, n_times=1001,
+        )
+        t0 = time.perf_counter()
+        proc = subprocess.run(
+            [cadet_cli, str(cfg_path)],
+            capture_output=True, text=True, timeout=300,
+        )
+        cadet_wall = (time.perf_counter() - t0) * 1000
+
+        if proc.returncode != 0:
+            print(f"  CADET FAILED: {proc.stderr[:200]}")
+            continue
+
+        with h5py.File(cfg_path, "r") as fh:
+            cadet_t = fh["output/solution/SOLUTION_TIMES"][:]
+            cadet_c = fh["output/solution/unit_002/SOLUTION_OUTLET"][:, 0]
+
+        # Compare NL-NILT to CADET (rel L2)
+        nilt_interp = np.interp(cadet_t, nilt_result.t, nilt_result.c)
+        diff = nilt_interp - cadet_c
+        cadet_norm = np.sqrt(np.mean(cadet_c**2))
+        rel_l2 = (
+            np.sqrt(np.mean(diff**2)) / cadet_norm if cadet_norm > 1e-15 else np.nan
+        )
+
+        results.append(PulseBenchmarkResult(
+            c_feed=c_feed, pulse_duration=t_pulse, NL_star=NL_star,
+            nilt_converged=nilt_result.converged,
+            nilt_iterations=nilt_result.n_iterations,
+            nilt_wall_ms=nilt_wall,
+            nilt_t=nilt_result.t, nilt_c=nilt_result.c,
+            cadet_t=cadet_t, cadet_c=cadet_c,
+            cadet_wall_ms=cadet_wall,
+            rel_l2_error=rel_l2,
+        ))
+        print(f"  L2 vs CADET: {rel_l2*100:.2f}%, "
+              f"iters: {nilt_result.n_iterations}, "
+              f"NILT: {nilt_wall:.0f}ms, CADET: {cadet_wall:.0f}ms")
+
+    return results
